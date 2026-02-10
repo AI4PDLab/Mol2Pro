@@ -1,9 +1,8 @@
-Oficcial implementation of "Generalise or Memorise? Benchmarking Ligand-Conditioned Protein
-Generation from Sequence-Only Data"
-
 # Mol2Pro
+### _Code for the paper:_ 
+### [Generalise or Memorise? Benchmarking Ligand-Conditioned Protein Generation from Sequence-Only Data](https://doi.org/10.64898/2026.02.06.704305)
 
-Inference script to generate protein binder sequences from ligand SMILES using a T5-style encoder–decoder model.
+Generate protein binder sequences from ligand SMILES using an encoder–decoder Protein Language Model.
 
 ## Requirements
 
@@ -12,13 +11,13 @@ Inference script to generate protein binder sequences from ligand SMILES using a
 
 ## Pretrained Models
 
-The prretrained models presented in the paper are available at https://huggingface.co/collections/AI4PD/mol2pro-family
+The pretrained models presented in the paper are available at [Hugging Face](https://huggingface.co/collections/AI4PD/mol2pro-family)
 
 ## Running inference
 
 **Input:** a text file with one SMILES per line (or a JSON/JSONL file with translation entries).
 
-**Example — model and tokenizers on Hugging Face (single repo):**
+**Example — model and tokenizers on Hugging Face:**
 
 ```bash
 python src/inference.py \
@@ -33,3 +32,16 @@ python src/inference.py \
 
 
 Outputs: one FASTA per input SMILES (25 sequences per molecule by default), plus `inference_metadata.json` (per-FASTA SMILES, perplexities, optional ground-truth sequences; run-level greedy perplexity stats) and `generation_parameters.json` in `--output_folder`.
+
+## Citation
+
+If you find this work useful, please cite:
+
+```bibtex
+@article{VicenteSola2026Generalise,
+  title   = {Generalise or Memorise? Benchmarking Ligand-Conditioned Protein Generation from Sequence-Only Data},
+  author  = {Vicente-Sola, Alex and Dornfeld, Lars and Coines, Joan and Ferruz, Noelia},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.02.06.704305},
+}
