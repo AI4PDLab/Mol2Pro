@@ -3,7 +3,6 @@ In output_folder_gt it saves the GT fastas and a folder_names.json that later al
 If AA_binding exists in dataset, also creates pocket versions in output_folder_gt_pocket
 """
 if __name__ == '__main__':
-    from transformers import AutoTokenizer, T5ForConditionalGeneration, AutoModelForSeq2SeqLM, AutoModelForCausalLM
     import argparse
     import json
     import re

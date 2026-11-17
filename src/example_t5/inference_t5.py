@@ -1,4 +1,4 @@
-"""T5 (and related) sequence generation for the Mol2ProBench example workflow.
+"""T5 sequence generation for the Mol2ProBench example workflow.
 
 Reads SMILES / reaction / benchmark JSON inputs, runs the model, and writes
 FASTA files plus `molecule_input_metadata.json` and
@@ -8,8 +8,7 @@ Evaluation under `eval/` assumes this step has already produced those FASTAs;
 it does not run model inference.
 """
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM, \
-    set_seed  # T5ForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, set_seed
 import argparse
 import os
 import torch
@@ -74,6 +73,23 @@ def compute_transition_scores(sequences, scores, pad_token_id, normalize_by_leng
 
     return transition_scores
 
+@torch.no_grad()
+def generated_sequence_nll(model, sequences, input_ids, attention_mask=None):
+    """Mean negative log-likelihood per generated token, for each row of T5 ``generate()`` output.
+
+    ``generate()`` starts every row with the decoder start token. It is dropped before the row is
+    used as ``labels``: T5 shifts labels right and prepends that token itself, so keeping it would
+    condition the decoder on two start tokens. Positions after the first EOS (padding) are not scored.
+    """
+    nlls = []
+    for row in sequences:
+        labels = row[1:].unsqueeze(0).clone()  # drop the decoder start token
+        is_eos = (labels == model.config.eos_token_id).long()
+        labels[(is_eos.cumsum(dim=1) - is_eos) > 0] = -100  # positions after the first EOS
+        nlls.append(model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss.item())
+    return nlls
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Mol2ProBench T5 example inference',
@@ -112,21 +128,11 @@ if __name__ == '__main__':
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if 'gatgpt' in args.model_path.lower():
-        GNN = True
-        print('Graph data mode')
-    else:
-        GNN = False
-        print('SMILES/SELFIES data mode')
-
     # Load protein tokenizer (Hugging Face only)
     tokenizer_aa = AutoTokenizer.from_pretrained(args.tokenizer_aa)
 
     # Load molecule tokenizer
-    if GNN:
-        tokenizer_mol = None
-    else:
-        tokenizer_mol = AutoTokenizer.from_pretrained(args.tokenizer_mol)
+    tokenizer_mol = AutoTokenizer.from_pretrained(args.tokenizer_mol)
 
     # Load data
     smiles_list = set()
@@ -175,142 +181,8 @@ if __name__ == '__main__':
                 smiles_list.add(line.strip())
 
     # Load model
-    def peek_model_type(model_dir: str) -> str | None:
-        cfg_path = os.path.join(model_dir, "config.json")
-        try:
-            with open(cfg_path, "r") as f:
-                return json.load(f).get("model_type", None)
-        except Exception:
-            return None
-
-
-    dec_only = False
-
-
-    use_cache = True  # KV cache for speed, not supported in custom model
-    if GNN:
-        from transformers import GPT2Config, Trainer
-        from models import GATGPT2Config, GATGPT2
-        from torch_geometric.data import Batch, Data
-
-        config = GATGPT2Config.from_pretrained(args.model_path)
-
-        # Load model weights
-        model = GATGPT2.from_pretrained(args.model_path, config=config)
-
-        model.eval()
-        model.to("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        try:
-            print('Attempt Seq2Seq model load... ')
-            loaded = False
-            mtype = peek_model_type(args.model_path)
-
-            if mtype == "custom_encoder_decoder":
-                use_cache = True  # KV cache for speed, not supported in custom model
-                from transformers.modeling_utils import load_state_dict
-                from models import create_custom_encoder_decoder_model
-
-                # Load State Dict
-                if os.path.exists(os.path.join(args.model_path, "pytorch_model.bin")):
-                    wfile = os.path.join(args.model_path, "pytorch_model.bin")
-                else:
-                    wfile = os.path.join(args.model_path, "model.safetensors")
-
-                sd = load_state_dict(wfile)
-                # Infer vocab size from checkpoint (robust to key variations)
-                cfg_path = os.path.join(args.model_path, "config.json")
-                cfg = json.load(open(cfg_path))
-
-                vocab_size = cfg["vocab_size"]                          # Joint vocab size (encoder in my implementations)
-                dec_vocab_size = cfg["decoder_config"]["vocab_size"]
-                dec_eos = cfg["eos_token_id"]
-                assert dec_eos == tokenizer_aa.eos_token_id, f"custom_encoder_decoder eos ({dec_eos}) is not the same as the tokenizer's ({tokenizer_aa.eos_token})"
-
-                # Load model config
-                cfg_path = os.path.join(args.model_path, "config.json")
-                with open(cfg_path, "r") as f:
-                    cfg = json.load(f)
-
-                enc_type = cfg.get("encoder_type", "t5")
-                dec_type = cfg.get("decoder_type", "t5")
-
-                enc_cfg = cfg.get("encoder_config") or {}
-                dec_cfg = cfg.get("decoder_config") or {}
-
-                # HF usually stores the origin checkpoint here
-                enc_name = enc_cfg.get("_name_or_path") or enc_cfg.get("name_or_path")
-                dec_name = dec_cfg.get("_name_or_path") or dec_cfg.get("name_or_path") or enc_name
-
-                if enc_name is None or dec_name is None:
-                    raise ValueError(
-                        "custom_encoder_decoder checkpoint missing encoder/decoder '_name_or_path' in config.json. "
-                        "Fix saving: set encoder_config._name_or_path and decoder_config._name_or_path (or add explicit fields)."
-                    )
-
-                pad_id = cfg.get("pad_token_id")
-                if pad_id is None:
-                    print("WARNING: Setting PAD token ID as the Tokenizer AA one")
-                    pad_id = tokenizer_aa.pad_token_id if tokenizer_aa.pad_token_id is not None else 0
-                pad_id = int(pad_id)
-
-                dec_start = cfg.get("decoder_start_token_id")
-                if dec_start is None:
-                    print("WARNING: Setting Dec_Start token ID as the PAD one")
-                    dec_start = pad_id
-                dec_start = int(dec_start)
-
-                # Build the *same* architecture as training, then load weights
-                model = create_custom_encoder_decoder_model(
-                    encoder_type=enc_type,
-                    decoder_type=dec_type,
-                    encoder_name_or_path=enc_name,
-                    decoder_name_or_path=dec_name,
-                    train_from_scratch=False,
-                    freeze_encoder=False,
-                    freeze_decoder=False,
-                    vocab_size=vocab_size,
-                    decoder_vocab_size=dec_vocab_size,
-                    pad_token_id=pad_id,
-                    decoder_start_token_id=dec_start,
-                    eos_token_id=dec_eos,
-                    eager_att=True  # Avoid KV-cache + SDPA attention bug
-                ).cuda()
-                
-                # Load weights
-                missing_keys, unexpected_keys = model.load_state_dict(sd, strict=False)
-
-                print("[custom_encoder_decoder] Loaded via factory + state_dict")
-                if missing_keys:
-                    print(f"[custom_encoder_decoder] missing keys (first 30): {missing_keys[:30]}")
-                if unexpected_keys:
-                    print(f"[custom_encoder_decoder] unexpected keys (first 30): {unexpected_keys[:30]}")
-
-                # Safety (prevents generation crashes)
-                if getattr(model.config, "decoder_start_token_id", None) is None:
-                    model.config.decoder_start_token_id = pad_id
-                    print(f"WARNING: Inference code set decoder_start_token_id to PAD_ID {model.config.decoder_start_token_id}")
-                if getattr(model.config, "pad_token_id", None) is None:
-                    model.config.pad_token_id = pad_id
-                    print(f"WARNING: Inference code set pad_token_id to PAD_ID {model.config.pad_token_id}")
-
-
-                model.eval()
-                loaded = True
-
-
-            if not loaded:
-                model = AutoModelForSeq2SeqLM.from_pretrained(args.model_path).cuda()
-
-        except Exception as e:
-            print(e)
-            print('Attempt CausalLM model load... ')
-            model = AutoModelForCausalLM.from_pretrained(args.model_path).cuda()
-            model.config.eos_token_id = tokenizer_mol.eos_token_id
-            model.config.pad_token_id = tokenizer_mol.pad_token_id
-            print(
-                f"Set `eos_token_id` to {tokenizer_mol.eos_token_id} and `pad_token_id` to {tokenizer_mol.pad_token_id}.")
-            dec_only = True
+    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_path).to(device)
+    model.eval()
     print('Model Loaded')
 
     molecule_json = {}
@@ -326,48 +198,16 @@ if __name__ == '__main__':
     for index,smiles in enumerate(smiles_list):
         sequences=[]
         with torch.no_grad():
-            if GNN:
-                from build_tokenized_dataset import convert_smiles_to_graph
-
-                node_feats, edge_index, edge_feats = convert_smiles_to_graph(smiles)
-                node_feats_tensor = torch.tensor(node_feats, dtype=torch.float, device=device)
-                edge_index_tensor = torch.tensor(edge_index, dtype=torch.long, device=device).T.contiguous()
-                edge_feats_tensor = torch.tensor(edge_feats, dtype=torch.float, device=device)
-
-                # Input to decoder is only bos
-                start_token = tokenizer_aa.bos_token_id or tokenizer_aa.convert_tokens_to_ids("▁")  # fallback to the space which is always appended by our tokenizer
-                text_input_ids = torch.tensor([[start_token]], dtype=torch.long, device=device)
-
-                input_ids = {
-                    "graph_node_feats": node_feats_tensor,  # shape (N, 3)
-                    "graph_edge_index": edge_index_tensor,  # shape (2, E)
-                    "graph_edge_feats": edge_feats_tensor,  # shape (E, 2)
-                    "batch": torch.full((len(node_feats),), 0, dtype=torch.long, device=device),  # shape (N,)
-                    "input_ids": text_input_ids
-                }
-
-            else:
-                input_ids = tokenizer_mol(smiles, return_tensors="pt").input_ids.to(device="cuda")
-            if not GNN:
-                print(f'Generating for {smiles} (input ids: {input_ids})')
-            else:
-                print(f'Generating for {smiles}')
+            input_ids = tokenizer_mol(smiles, return_tensors="pt").input_ids.to(device)
+            print(f'Generating for {smiles} (input ids: {input_ids})')
 
             # top_k = Choose at random from the first K tokens (weigthed by softmax score)
             # num_return_sequences = The number of independently computed returned sequences for each element in the batch.
 
-            if dec_only:
-                attention_mask = torch.ones_like(input_ids).cuda()
-                outputs_dict = model.generate(input_ids, top_k=args.top_k, attention_mask = attention_mask, repetition_penalty=1.2,
-                                              max_length=1024, do_sample=True, temperature=args.temperature,
-                                              num_return_sequences=25, return_dict_in_generate=True, output_scores=True)
-                greedy_outputs = model.generate(input_ids, attention_mask = attention_mask, max_length=1024, do_sample=False)
-
-            else:
-                outputs_dict = model.generate(input_ids, top_k=args.top_k,repetition_penalty=1.2, max_length=1024,
-                                         do_sample=True, temperature=args.temperature, num_return_sequences=25,
-                                         return_dict_in_generate=True, output_scores=True, use_cache=use_cache)
-                greedy_outputs = model.generate(input_ids, max_length=1024, do_sample=False, use_cache=use_cache)
+            outputs_dict = model.generate(input_ids, top_k=args.top_k, repetition_penalty=1.2, max_length=1024,
+                                          do_sample=True, temperature=args.temperature, num_return_sequences=25,
+                                          return_dict_in_generate=True, output_scores=True)
+            greedy_outputs = model.generate(input_ids, max_length=1024, do_sample=False)
 
             outputs = outputs_dict.sequences
             transition_scores = compute_transition_scores(
@@ -380,12 +220,8 @@ if __name__ == '__main__':
 
             sequences = [tokenizer_aa.decode(output, skip_special_tokens=True) for output in outputs]
 
-            # Model forward for greedy perplexity
-            g_labels = greedy_outputs.clone()
-            g_labels[g_labels == pad_token_id] = -100  # ignore pad tokens in loss
-            forward_outputs = model(input_ids=input_ids, attention_mask=attention_mask if dec_only else None,
-                        labels=g_labels)
-            nll = forward_outputs.loss.item()  # Greedy NLL. Normalised per out length
+            # Greedy perplexity: teacher-forced NLL of the greedy sequence (see generated_sequence_nll)
+            nll = generated_sequence_nll(model, greedy_outputs, input_ids)[0]
 
 
             # Filename of the output fasta

@@ -15,7 +15,7 @@ Records are expected to carry a top-level **`translation`** object with molecule
 - **SMILES-style**: `Canonical Smiles` or `SELFIES`, plus `Protein sequence` or `Sequence`
 - **Reaction-style**: `Reaction` plus `Sequence` (and related keys as in your export)
 
-Splits and [`src/example_t5/tokenize.py`](src/example_t5/tokenize.py) assume this layout. For details on loading (Hub-first vs local JSON/JSONL), see [`src/example_t5/README.md`](src/example_t5/README.md).
+Splits and [`src/example_t5/tokenize_dataset.py`](src/example_t5/tokenize_dataset.py) assume this layout. For details on loading (Hub-first vs local JSON/JSONL), see [`src/example_t5/README.md`](src/example_t5/README.md).
 
 ## Installation
 

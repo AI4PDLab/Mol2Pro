@@ -4,7 +4,7 @@ End-to-end placeholder flow: **tokenize** curated Mol2Pro JSON → **train** a s
 
 ## Dataset loading (Hub-first, local fallback)
 
-[`tokenize.py`](tokenize.py) uses Hugging Face [`datasets.load_dataset`](https://huggingface.co/docs/datasets/) in both cases:
+[`tokenize_dataset.py`](tokenize_dataset.py) uses Hugging Face [`datasets.load_dataset`](https://huggingface.co/docs/datasets/) in both cases:
 
 | Source | `--dataset` value | Behavior |
 |--------|-------------------|----------|
@@ -24,7 +24,7 @@ Outputs:
 
 ## One-shot train wrapper
 
-[`run_train.sh`](run_train.sh) runs `tokenize.py` when `TOKENIZED_DIR/dataset_dict.json` is missing (or when `FORCE_TOKENIZE=1`), then [`train.py`](train.py).
+[`run_train.sh`](run_train.sh) runs `tokenize_dataset.py` when `TOKENIZED_DIR/dataset_dict.json` is missing (or when `FORCE_TOKENIZE=1`), then [`train.py`](train.py).
 
 Required environment variables:
 
@@ -59,12 +59,12 @@ bash example_t5/run_train.sh
 
 | Script / path | Role |
 |---------------|------|
-| [`tokenize.py`](tokenize.py) | Hub-first / local JSON → tokenized `DatasetDict` on disk. |
+| [`tokenize_dataset.py`](tokenize_dataset.py) | Hub-first / local JSON → tokenized `DatasetDict` on disk. |
 | [`train.py`](train.py) | Minimal `Seq2SeqTrainer` on that `DatasetDict` (extend as needed). |
 | [`inference_t5.py`](inference_t5.py) | Generates FASTAs + `molecule_*_metadata.json` for eval. |
 | [`eval_scripts/run_inference_and_eval.sh`](eval_scripts/run_inference_and_eval.sh) | Inference + MMseqs / join / optional pLDDT. |
 
 ## Notes
 
-- **Tokenizers**: Use Hugging Face `AutoTokenizer` checkpoints only (local dirs or Hub ids). `tokenize.py` and `inference_t5.py` load them via `transformers.AutoTokenizer.from_pretrained`.
+- **Tokenizers**: Use Hugging Face `AutoTokenizer` checkpoints only (local dirs or Hub ids). `tokenize_dataset.py` and `inference_t5.py` load them via `transformers.AutoTokenizer.from_pretrained`.
 - **`train.py`** loads `AutoTokenizer` from the `tokenizer_aa` path recorded in `tokenize_metadata.json`.

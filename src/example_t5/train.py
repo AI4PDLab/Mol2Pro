@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal seq2seq training entry point for tokenized DatasetDict on disk.
 
-Expects the directory produced by ``tokenize.py`` (``DatasetDict.save_to_disk``).
+Expects the directory produced by ``tokenize_dataset.py`` (``DatasetDict.save_to_disk``).
 Extend hyperparameters and metrics as needed for your experiments.
 """
 
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         "--tokenized_dir",
         required=True,
         type=str,
-        help="Directory passed to tokenize.py --output_dir (DatasetDict on disk).",
+        help="Directory passed to tokenize_dataset.py --output_dir (DatasetDict on disk).",
     )
     p.add_argument(
         "--model_name_or_path",

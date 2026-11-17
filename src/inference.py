@@ -10,6 +10,7 @@ import numpy as np
 import torch.nn.functional as F
 from datetime import datetime
 from collections import defaultdict
+from pathlib import Path
 
 
 def compute_transition_scores(sequences, scores, pad_token_id, normalize_by_length=True):
@@ -62,6 +63,23 @@ def compute_transition_scores(sequences, scores, pad_token_id, normalize_by_leng
 
     # Convert to list of floats
     return transition_scores_tensor.tolist()
+
+
+@torch.no_grad()
+def generated_sequence_nll(model, sequences, input_ids, attention_mask=None):
+    """Mean negative log-likelihood per generated token, for each row of T5 ``generate()`` output.
+
+    ``generate()`` starts every row with the decoder start token. It is dropped before the row is
+    used as ``labels``: T5 shifts labels right and prepends that token itself, so keeping it would
+    condition the decoder on two start tokens. Positions after the first EOS (padding) are not scored.
+    """
+    nlls = []
+    for row in sequences:
+        labels = row[1:].unsqueeze(0).clone()  # drop the decoder start token
+        is_eos = (labels == model.config.eos_token_id).long()
+        labels[(is_eos.cumsum(dim=1) - is_eos) > 0] = -100  # positions after the first EOS
+        nlls.append(model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss.item())
+    return nlls
 
 
 if __name__ == '__main__':
@@ -192,15 +210,8 @@ if __name__ == '__main__':
 
         sequences = [tokenizer_aa.decode(o, skip_special_tokens=True) for o in outputs]
 
-        # Model forward for greedy perplexity
-        g_labels = greedy_outputs.clone()
-        g_labels[g_labels == pad_token_id] = -100  # ignore pad tokens in loss
-        forward_outputs = model(
-            input_ids=input_ids,
-            attention_mask=encoder_attention_mask,
-            labels=g_labels,
-        )
-        nll = forward_outputs.loss.item()
+        # Greedy perplexity: teacher-forced NLL of the greedy sequence (see generated_sequence_nll)
+        nll = generated_sequence_nll(model, greedy_outputs, input_ids, encoder_attention_mask)[0]
 
         # Filename of the output fasta
         filename = f'{args.output_folder}/output_topk{args.top_k}_file-{index}.fasta'
